@@ -38,6 +38,7 @@ typedef struct
 typedef enum
 {
   TABI_BUILD_TARGET_TYPE_EXECUTABLE,
+  TABI_BUILD_TARGET_TYPE_OBJECTS,
 } TabiBuildTargetType;
 
 typedef struct
@@ -186,8 +187,7 @@ tabi_compiler (const char *path, const char *flags)
 }
 
 static TabiBuildTarget *
-tabi_build_executable (TabiCompiler *compiler, const char *executable_name,
-                       const char *source_file)
+tabi_executable (TabiCompiler *compiler, const char *executable_name)
 {
   TabiBuildTarget *target
       = (TabiBuildTarget *)malloc (sizeof (TabiBuildTarget));
@@ -197,16 +197,41 @@ tabi_build_executable (TabiCompiler *compiler, const char *executable_name,
   target->compiler = compiler;
   target->output_file = strdup (executable_name);
 
-  // For simplicity, we only handle one source file in this example
-  target->source_file_count = 1;
-  target->source_files = (const char **)malloc (sizeof (const char *) * 1);
-  target->source_files[0] = tabi_internal_pathcat (
-      tabi_global_context.projet_root_path, source_file);
+  target->source_file_count = 0;
+  target->source_files = NULL;
 
   tabi_internal_object_list_add (&tabi_global_context.objects,
                                  (TabiObject *)target);
-
   return target;
+}
+
+static TabiBuildTarget *
+tabi_objects (TabiCompiler *compiler)
+{
+  TabiBuildTarget *target
+      = (TabiBuildTarget *)malloc (sizeof (TabiBuildTarget));
+  target->base.type = TABI_OBJECT_TYPE_BUILD_TARGET;
+  target->target_type = TABI_BUILD_TARGET_TYPE_OBJECTS;
+  target->compiler = compiler;
+  target->output_file = NULL;
+
+  target->source_file_count = 0;
+  target->source_files = NULL;
+
+  tabi_internal_object_list_add (&tabi_global_context.objects,
+                                 (TabiObject *)target);
+  return target;
+}
+
+static void
+tabi_add_source (TabiBuildTarget *target, const char *source_file)
+{
+  target->source_files = (const char **)realloc (
+      target->source_files,
+      sizeof (const char *) * (target->source_file_count + 1));
+  target->source_files[target->source_file_count] = tabi_internal_pathcat (
+      tabi_global_context.projet_root_path, source_file);
+  target->source_file_count += 1;
 }
 
 ///
@@ -227,7 +252,7 @@ tabi_internal_init (int argc, char **argv, TabiContext *context)
     {
       fprintf (stderr, "Usage: %s <project_root_path> <project_build_path>\n",
                argv[0]);
-      return;
+      exit (1);
     }
 
   // TODO better args parsing
@@ -283,7 +308,7 @@ tabi_internal_bootstrap_if_necessary (TabiContext *context)
                  "  description = Compiling $in\n"
                  // TODO depfile for tabi.h?
                  "\n"
-                 "rule run_generator\n"
+                 "rule run_tabi\n"
                  "  command = ./$in $root_path $build_path\n"
                  "  description = Running user-defined $in\n"
                  "  generator = 1 \n"
@@ -294,7 +319,7 @@ tabi_internal_bootstrap_if_necessary (TabiContext *context)
                  "build build_tabi: cc_tabi ${root_path}/build.tabi.c\n"
                  "\n"
                  "# Run the user's build instructions finalizing build.ninja\n"
-                 "build generated_tabi.ninja: run_generator build_tabi\n"
+                 "build generated_tabi.ninja: run_tabi build_tabi\n"
                  "\n"
                  "include generated_tabi.ninja\n");
 
