@@ -6,14 +6,9 @@
 #define TABI_INCLUDED
 #endif
 
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "tabi-internal.h"
 
-#define TABI_GENERATED_FILE_NAME "generated_tabi.ninja"
-#define TABI_VERSION "0.1.0"
+TABI_DECLARE_DYN_ARRAY (const char *, TabiStringArray);
 
 typedef enum
 {
@@ -26,6 +21,8 @@ typedef struct
 {
   TabiObjectType type;
 } TabiObject;
+
+TABI_DECLARE_DYN_ARRAY (TabiObject *, TabiObjectArray);
 
 typedef struct
 {
@@ -41,24 +38,22 @@ typedef enum
   TABI_BUILD_TARGET_TYPE_OBJECTS,
 } TabiBuildTargetType;
 
-typedef struct
+typedef struct TabiBuildTarget TabiBuildTarget;
+
+TABI_DECLARE_DYN_ARRAY (TabiBuildTarget *, TabiBuildTargetArray);
+
+typedef struct TabiBuildTarget
 {
   TabiObject base;
   TabiBuildTargetType target_type;
 
-  const char **source_files;
-  size_t source_file_count;
+  TabiStringArray source_files;
 
   TabiCompiler *compiler;
-  const char *output_file;
-} TabiBuildTarget;
+  const char *target_name;
 
-typedef struct
-{
-  TabiObject **items;
-  size_t count;
-  size_t capacity;
-} TabiObjectList;
+  TabiBuildTargetArray dependencies;
+} TabiBuildTarget;
 
 typedef struct
 {
@@ -68,10 +63,13 @@ typedef struct
   /// Path where the build system is generated
   const char *project_build_path;
 
+  /// Path where tabi may place build artifacts and temporary files
+  const char *tabi_build_path;
+
   bool need_bootstrap;
 
   /// Anything that tabi can build will be stored here
-  TabiObjectList objects;
+  TabiObjectArray objects;
 } TabiContext;
 
 /// The context used within the build.tabi.c file
@@ -89,6 +87,8 @@ tabi_message (const char *format, ...)
   va_end (args);
 }
 
+/// Concatenate two paths with a '/' in between. The returned string must be
+/// freed by the caller.
 static const char *
 tabi_internal_pathcat (const char *path1, const char *path2)
 {
@@ -99,14 +99,6 @@ tabi_internal_pathcat (const char *path1, const char *path2)
   result[len1] = '/';
   strcpy (result + len1 + 1, path2);
   return result;
-}
-
-static void
-tabi_internal_object_list_init (TabiObjectList *list)
-{
-  list->items = NULL;
-  list->count = 0;
-  list->capacity = 0;
 }
 
 static void
@@ -130,45 +122,18 @@ tabi_internal_object_deinit (TabiObject *object)
       {
         TabiBuildTarget *target = (TabiBuildTarget *)object;
 
-        free ((void *)target->output_file);
-
-        for (size_t i = 0; i < target->source_file_count; ++i)
-          {
-            free ((void *)target->source_files[i]);
-          }
-        free (target->source_files);
+        free ((void *)target->target_name);
+        TABI_DYN_ARRAY_FOR_EACH (&target->source_files, const char **,
+                                 source_file)
+        {
+          // We strdup'ed these paths when adding them
+          free ((void *)*source_file);
+        }
+        TABI_DYN_ARRAY_DEINIT (&target->source_files);
         break;
       }
     }
   free (object);
-}
-
-static void
-tabi_internal_object_list_deinit (TabiObjectList *list)
-{
-  // Iterate over all objects and free each of them based on their type
-  for (size_t i = 0; i < list->count; ++i)
-    {
-      TabiObject *obj = list->items[i];
-      tabi_internal_object_deinit (obj);
-    }
-  free (list->items);
-  list->items = NULL;
-  list->count = 0;
-  list->capacity = 0;
-}
-
-static void
-tabi_internal_object_list_add (TabiObjectList *list, TabiObject *object)
-{
-  if (list->count >= list->capacity)
-    {
-      size_t new_capacity = (list->capacity == 0) ? 4 : list->capacity * 2;
-      list->items = (TabiObject **)realloc (
-          list->items, new_capacity * sizeof (TabiObject *));
-      list->capacity = new_capacity;
-    }
-  list->items[list->count++] = object;
 }
 
 static TabiCompiler *
@@ -181,11 +146,15 @@ tabi_compiler (const char *path, const char *flags)
   compiler->path = strdup (path);
   compiler->flags = strdup (flags);
 
-  tabi_internal_object_list_add (&tabi_global_context.objects,
-                                 (TabiObject *)compiler);
+  TABI_DYN_ARRAY_APPEND (&tabi_global_context.objects, TabiObject *,
+                         (TabiObject *)compiler);
+
   return compiler;
 }
 
+///
+/// Create a build target that compiles source files into an executable
+///
 static TabiBuildTarget *
 tabi_executable (TabiCompiler *compiler, const char *executable_name)
 {
@@ -195,43 +164,57 @@ tabi_executable (TabiCompiler *compiler, const char *executable_name)
   target->base.type = TABI_OBJECT_TYPE_BUILD_TARGET;
   target->target_type = TABI_BUILD_TARGET_TYPE_EXECUTABLE;
   target->compiler = compiler;
-  target->output_file = strdup (executable_name);
+  target->target_name = strdup (executable_name);
 
-  target->source_file_count = 0;
-  target->source_files = NULL;
+  TABI_DYN_ARRAY_INIT (&target->source_files);
 
-  tabi_internal_object_list_add (&tabi_global_context.objects,
-                                 (TabiObject *)target);
+  TABI_DYN_ARRAY_APPEND (&tabi_global_context.objects, TabiObject *,
+                         (TabiObject *)target);
+
   return target;
 }
 
+///
+/// Create a build target that compiles source files into object files
+///
 static TabiBuildTarget *
-tabi_objects (TabiCompiler *compiler)
+tabi_objects (TabiCompiler *compiler, const char *target_name)
 {
   TabiBuildTarget *target
       = (TabiBuildTarget *)malloc (sizeof (TabiBuildTarget));
   target->base.type = TABI_OBJECT_TYPE_BUILD_TARGET;
   target->target_type = TABI_BUILD_TARGET_TYPE_OBJECTS;
   target->compiler = compiler;
-  target->output_file = NULL;
+  target->target_name = strdup (target_name);
 
-  target->source_file_count = 0;
-  target->source_files = NULL;
+  TABI_DYN_ARRAY_INIT (&target->source_files);
 
-  tabi_internal_object_list_add (&tabi_global_context.objects,
-                                 (TabiObject *)target);
+  TABI_DYN_ARRAY_APPEND (&tabi_global_context.objects, TabiObject *,
+                         (TabiObject *)target);
   return target;
 }
 
 static void
 tabi_add_source (TabiBuildTarget *target, const char *source_file)
 {
-  target->source_files = (const char **)realloc (
-      target->source_files,
-      sizeof (const char *) * (target->source_file_count + 1));
-  target->source_files[target->source_file_count] = tabi_internal_pathcat (
-      tabi_global_context.projet_root_path, source_file);
-  target->source_file_count += 1;
+  TABI_DYN_ARRAY_APPEND (&target->source_files, const char *,
+                         strdup (source_file));
+}
+
+///
+/// Specify that a build target depends on another build target
+///
+static void
+tabi_depends_on (TabiBuildTarget *target, TabiBuildTarget *dependency)
+{
+  TABI_CHECK (dependency->target_type == TABI_BUILD_TARGET_TYPE_OBJECTS,
+              "tabi_depends_on: Dependency must be of type OBJECTS");
+
+  TABI_CHECK (target->target_type == TABI_BUILD_TARGET_TYPE_EXECUTABLE,
+              "tabi_depends_on: Target must be of type EXECUTABLE");
+
+  // TODO: safety: prevent multiple inlcusion and cycles
+  TABI_DYN_ARRAY_APPEND (&target->dependencies, TabiBuildTarget *, dependency);
 }
 
 ///
@@ -256,8 +239,10 @@ tabi_internal_init (int argc, char **argv, TabiContext *context)
     }
 
   // TODO better args parsing
-  context->projet_root_path = argv[1];
-  context->project_build_path = argv[2];
+  context->projet_root_path = strdup (argv[1]);
+  context->project_build_path = strdup (argv[2]);
+  context->tabi_build_path
+      = tabi_internal_pathcat (context->project_build_path, "tabi_build");
 
   // Check if build.ninja exists in the build path
   char build_file_path[1024] = { 0 };
@@ -274,13 +259,22 @@ tabi_internal_init (int argc, char **argv, TabiContext *context)
       fclose (file);
     }
 
-  tabi_internal_object_list_init (&context->objects);
+  TABI_DYN_ARRAY_INIT (&context->objects);
 }
 
 static void
 tabi_internal_deinit (TabiContext *context)
 {
-  tabi_internal_object_list_deinit (&context->objects);
+  free ((void *)context->projet_root_path);
+  free ((void *)context->project_build_path);
+  free ((void *)context->tabi_build_path);
+
+  TABI_DYN_ARRAY_FOR_EACH (&context->objects, TabiObject **, obj)
+  {
+    tabi_internal_object_deinit (*obj);
+  }
+
+  TABI_DYN_ARRAY_DEINIT (&context->objects);
 }
 
 static void
@@ -331,6 +325,7 @@ tabi_internal_bootstrap_if_necessary (TabiContext *context)
   free ((void *)generated_file_path);
 }
 
+/// Generate all rules and build targets
 static void
 tabi_internal_generate (TabiContext *context)
 {
@@ -342,37 +337,89 @@ tabi_internal_generate (TabiContext *context)
       TabiObject *obj = context->objects.items[i];
       switch (obj->type)
         {
+        case TABI_OBJECT_TYPE_UNKNOWN:
+          {
+            TABI_CHECK (false,
+                        "Unknown object type encountered during generation");
+          }
         case TABI_OBJECT_TYPE_COMPILER:
           {
             TabiCompiler *compiler = (TabiCompiler *)obj;
-            // A compiler can generate rules
-            fprintf (f, "\n# Compiler: %s with flags: %s\n", compiler->name,
-                     compiler->flags);
-            fprintf (f, "rule %s\n", compiler->name);
-            fprintf (f, "  command = %s %s -o $out $in\n", compiler->path,
+            fprintf (f, "rule %s_compile\n", compiler->name);
+            fprintf (f, "  command = %s %s -c -o $out $in\n", compiler->path,
                      compiler->flags);
             fprintf (f, "  description = Compiling $in\n");
+
+            fprintf (f, "rule %s_link\n", compiler->name);
+            fprintf (f, "  command = %s %s -o $out $in\n", compiler->path,
+                     compiler->flags);
+            fprintf (f, "  description = Linking $in\n");
             break;
           }
+
+        //
+        // TODO: need to include the correct transitive dependencies here
+        //
         case TABI_OBJECT_TYPE_BUILD_TARGET:
           {
             TabiBuildTarget *target = (TabiBuildTarget *)obj;
-            if (target->target_type == TABI_BUILD_TARGET_TYPE_EXECUTABLE)
+            switch (target->target_type)
               {
-                fprintf (f, "\n# Build target: %s\n", target->output_file);
-                fprintf (f, "build %s: %s", target->output_file,
-                         target->compiler->name);
-                for (size_t j = 0; j < target->source_file_count; ++j)
+              case TABI_BUILD_TARGET_TYPE_EXECUTABLE:
+                {
+                  TABI_DYN_ARRAY_FOR_EACH (&target->source_files,
+                                           const char **, source_file)
                   {
-                    fprintf (f, " %s", target->source_files[j]);
+                    fprintf (f, "build %s/%s/%s.o: %s_compile %s/%s\n",
+                             context->tabi_build_path, target->target_name,
+                             *source_file, target->compiler->name,
+                             context->projet_root_path, *source_file);
                   }
-                fprintf (f, "\n");
+
+                  // TODO: Place executables in the build path root (or maybe
+                  // bin?)
+                  fprintf (f, "build %s/%s: %s_link",
+                           context->project_build_path, target->target_name,
+                           target->compiler->name);
+
+                  // Link with the direct source files of this target
+                  TABI_DYN_ARRAY_FOR_EACH (&target->source_files,
+                                           const char **, source_file)
+                  {
+                    fprintf (f, " %s/%s/%s.o", context->tabi_build_path,
+                             target->target_name, *source_file);
+                  }
+                  // Link with object files from dependencies
+                  TABI_DYN_ARRAY_FOR_EACH (&target->dependencies,
+                                           TabiBuildTarget **, dep)
+                  {
+                    // TODO: needs to recursively include transitive
+                    // dependencies
+                    TABI_DYN_ARRAY_FOR_EACH (&(*dep)->source_files,
+                                             const char **, dep_source_file)
+                    {
+                      fprintf (f, " %s/%s/%s.o", context->tabi_build_path,
+                               (*dep)->target_name, *dep_source_file);
+                    }
+                  }
+                  fprintf (f, "\n");
+                }
+                break;
+              case TABI_BUILD_TARGET_TYPE_OBJECTS:
+                {
+                  TABI_DYN_ARRAY_FOR_EACH (&target->source_files,
+                                           const char **, source_file)
+                  {
+                    fprintf (f, "build %s/%s/%s.o: %s_compile %s/%s\n",
+                             context->tabi_build_path, target->target_name,
+                             *source_file, target->compiler->name,
+                             context->projet_root_path, *source_file);
+                  }
+                  fprintf (f, "\n");
+
+                  break;
+                }
               }
-            break;
-          }
-        default:
-          {
-            // Ignore other object types for now
             break;
           }
         }

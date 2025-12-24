@@ -9,6 +9,7 @@ failure_count=0
 
 for dir in */ ; do
     if [ -f "$dir/test.sh" ]; then
+        echo "Running test $dir"
         (cd "$dir" && bash test.sh)
         exit_code=$?
         if [ $exit_code -eq 0 ]; then
@@ -17,6 +18,7 @@ for dir in */ ; do
             echo "Test in $dir failed with exit code $exit_code."
             failure_count=$((failure_count + 1))
         fi
+        echo ""
     fi
 done
 
