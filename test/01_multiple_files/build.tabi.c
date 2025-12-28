@@ -1,3 +1,4 @@
+#define TABI_IMPLEMENTATION
 #include "../../src/tabi.h"
 
 // Insert your build instructions here
