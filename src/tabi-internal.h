@@ -8,6 +8,8 @@
 #ifndef TABI_INTERNAL_H
 #define TABI_INTERNAL_H
 
+#include "tabi-log.h"
+#include "tabi-mem.h"
 #include "tabi-types.h"
 
 #include <stdarg.h>
@@ -33,8 +35,8 @@
   typedef struct                                                              \
   {                                                                           \
     array_type *items;                                                        \
-    u64 count;                                                             \
-    u64 capacity;                                                          \
+    u64 count;                                                                \
+    u64 capacity;                                                             \
   } array_name;
 
 #define TABI_DYN_ARRAY_INITIAL_CAPACITY 2
@@ -64,7 +66,7 @@
     {                                                                         \
       if ((array)->count >= (array)->capacity)                                \
         {                                                                     \
-          u64 new_capacity                                                 \
+          u64 new_capacity                                                    \
               = ((array)->capacity == 0)                                      \
                     ? TABI_DYN_ARRAY_INITIAL_CAPACITY                         \
                     : (array)->capacity * TABI_DYN_ARRAY_GROWTH_FACTOR;       \
@@ -80,24 +82,6 @@
 #define TABI_DYN_ARRAY_FOR_EACH(array, iterator_type, it)                     \
   for (iterator_type it = (array)->items;                                     \
        it < (array)->items + (array)->count; ++it)
-
-typedef enum
-{
-  TABI_LOG_TYPE_INFO,
-  TABI_LOG_TYPE_WARNING,
-  TABI_LOG_TYPE_ERROR,
-} TabiLogType;
-
-void tabi_internal_log (TabiLogType type, const char *format, ...);
-
-#define tabi_internal_message(format, ...)                                    \
-  tabi_internal_log (TABI_LOG_TYPE_INFO, format, ##__VA_ARGS__)
-
-#define tabi_internal_warning(format, ...)                                    \
-  tabi_internal_log (TABI_LOG_TYPE_WARNING, format, ##__VA_ARGS__)
-
-#define tabi_internal_error(format, ...)                                      \
-  tabi_internal_log (TABI_LOG_TYPE_ERROR, format, ##__VA_ARGS__)
 
 TABI_DECLARE_DYN_ARRAY (const char *, TabiStringArray);
 
@@ -149,7 +133,7 @@ typedef struct TabiBuildTarget
 typedef struct
 {
   /// Path where the build.tabi.c file resides
-  const char *projet_root_path;
+  const char *project_root_path;
 
   /// Path where the build system is generated
   const char *project_build_path;
@@ -159,16 +143,15 @@ typedef struct
 
   b8 need_bootstrap;
 
-  /// Anything that tabi can build will be stored here
+  /// Everything that we create with tabi
   TabiObjectArray objects;
+
+  /// Arena allocator
+  TabiInternalMem mem;
 } TabiContext;
 
 /// The context used within the build.tabi.c file
 extern TabiContext tabi_global_context;
-
-/// Concatenate two paths with a '/' in between. The returned string must be
-/// freed by the caller.
-const char *tabi_internal_pathcat (const char *path1, const char *path2);
 
 void tabi_internal_object_deinit (TabiObject *object);
 
@@ -187,65 +170,33 @@ void tabi_internal_bootstrap_if_necessary (TabiContext *context);
 /// Generate all rules and build targets
 void tabi_internal_generate (TabiContext *context);
 
-#define TABI_INTERNAL_MAIN_ENTRY_POINT(user_entry_point)                      \
+void tabi_internal_summary (TabiContext *context);
+
+static int
+tabi_internal_main_entry_point (int argc, char **argv,
+                                void (*user_entry_point) ())
+{
+  tabi_internal_init (argc, argv, &tabi_global_context);
+  tabi_internal_status (&tabi_global_context);
+  tabi_internal_bootstrap_if_necessary (&tabi_global_context);
+  user_entry_point ();
+  tabi_internal_generate (&tabi_global_context);
+  tabi_internal_summary (&tabi_global_context);
+  tabi_internal_deinit (&tabi_global_context);
+  return 0;
+}
+
+#define TABI_INTERNAL_MAIN_ENTRY_POINT(options)                               \
   int main (int argc, char **argv)                                            \
   {                                                                           \
-    TabiContext ctxt;                                                         \
-    tabi_internal_init (argc, argv, &tabi_global_context);                    \
-    tabi_internal_status (&tabi_global_context);                              \
-    tabi_internal_bootstrap_if_necessary (&tabi_global_context);              \
-    user_entry_point ();                                                      \
-    tabi_internal_generate (&tabi_global_context);                            \
-    tabi_internal_deinit (&tabi_global_context);                              \
-    return 0;                                                                 \
+    return tabi_internal_main_entry_point (argc, argv, options);              \
   }
 
 /// Definitions if desired
 #ifdef TABI_IMPLEMENTATION
 
-void
-tabi_internal_log (TabiLogType type, const char *format, ...)
-{
-  va_list args;
-  va_start (args, format);
-  switch (type)
-    {
-    case TABI_LOG_TYPE_INFO:
-      vprintf (format, args);
-      printf ("\n");
-      break;
-    case TABI_LOG_TYPE_WARNING:
-      fprintf (stderr, "[Warn] ");
-      vfprintf (stderr, format, args);
-      fprintf (stderr, "\n");
-      break;
-    case TABI_LOG_TYPE_ERROR:
-      fprintf (stderr, "[Error] ");
-      vfprintf (stderr, format, args);
-      fprintf (stderr, "\n");
-      break;
-    }
-  va_end (args);
-}
-
 /// The context used within the build.tabi.c file
-/// TODO: might need to make this an extern if build code may be used across
-/// multiple translation units. For now this is prohibted by the include guard
 TabiContext tabi_global_context;
-
-/// Concatenate two paths with a '/' in between. The returned string must be
-/// freed by the caller.
-const char *
-tabi_internal_pathcat (const char *path1, const char *path2)
-{
-  u64 len1 = strlen (path1);
-  u64 len2 = strlen (path2);
-  char *result = (char *)calloc (len1 + len2 + 2, 1); // +1 for '/' +1 for '\0'
-  strcpy (result, path1);
-  result[len1] = '/';
-  strcpy (result + len1 + 1, path2);
-  return result;
-}
 
 void
 tabi_internal_object_deinit (TabiObject *object)
@@ -258,28 +209,17 @@ tabi_internal_object_deinit (TabiObject *object)
       }
     case TABI_OBJECT_TYPE_COMPILER:
       {
-        TabiCompiler *compiler = (TabiCompiler *)object;
-        free ((void *)compiler->name);
-        free ((void *)compiler->path);
-        free ((void *)compiler->flags);
         break;
       }
     case TABI_OBJECT_TYPE_BUILD_TARGET:
       {
         TabiBuildTarget *target = (TabiBuildTarget *)object;
 
-        free ((void *)target->target_name);
-        TABI_DYN_ARRAY_FOR_EACH (&target->source_files, const char **,
-                                 source_file)
-        {
-          // We strdup'ed these paths when adding them
-          free ((void *)*source_file);
-        }
         TABI_DYN_ARRAY_DEINIT (&target->source_files);
+        TABI_DYN_ARRAY_DEINIT (&target->dependencies);
         break;
       }
     }
-  free (object);
 }
 
 ///
@@ -304,11 +244,13 @@ tabi_internal_init (i32 argc, char **argv, TabiContext *context)
       exit (1);
     }
 
+  tabi_internal_mem_init (&context->mem, TABI_MiB (1));
+
   // TODO better args parsing
-  context->projet_root_path = strdup (argv[1]);
-  context->project_build_path = strdup (argv[2]);
-  context->tabi_build_path
-      = tabi_internal_pathcat (context->project_build_path, "tabi_build");
+  context->project_root_path = tabi_internal_strdup (&context->mem, argv[1]);
+  context->project_build_path = tabi_internal_strdup (&context->mem, argv[2]);
+  context->tabi_build_path = tabi_internal_pathcat (
+      &context->mem, context->project_build_path, "tabi_build");
 
   // Check if build.ninja exists in the build path
   char build_file_path[1024] = { 0 };
@@ -324,23 +266,18 @@ tabi_internal_init (i32 argc, char **argv, TabiContext *context)
       context->need_bootstrap = false;
       fclose (file);
     }
-
-  TABI_DYN_ARRAY_INIT (&context->objects);
 }
 
 void
 tabi_internal_deinit (TabiContext *context)
 {
-  free ((void *)context->projet_root_path);
-  free ((void *)context->project_build_path);
-  free ((void *)context->tabi_build_path);
-
   TABI_DYN_ARRAY_FOR_EACH (&context->objects, TabiObject **, obj)
   {
     tabi_internal_object_deinit (*obj);
   }
-
   TABI_DYN_ARRAY_DEINIT (&context->objects);
+
+  tabi_internal_mem_deinit (&context->mem);
 }
 
 void
@@ -351,14 +288,13 @@ tabi_internal_bootstrap_if_necessary (TabiContext *context)
 
   tabi_internal_message ("Bootstrapping the build system");
 
-  const char *build_file_path
-      = tabi_internal_pathcat (context->project_build_path, "build.ninja");
+  const char *build_file_path = tabi_internal_pathcat (
+      &context->mem, context->project_build_path, "build.ninja");
   FILE *file = fopen (build_file_path, "w");
-  free ((void *)build_file_path);
 
   fprintf (file, "# === variables ===\n");
 
-  fprintf (file, "root_path = %s\n", context->projet_root_path);
+  fprintf (file, "root_path = %s\n", context->project_root_path);
   fprintf (file, "build_path = %s\n", context->project_build_path);
   fprintf (file, "\n");
 
@@ -384,11 +320,10 @@ tabi_internal_bootstrap_if_necessary (TabiContext *context)
                  "include generated_tabi.ninja\n");
 
   const char *generated_file_path = tabi_internal_pathcat (
-      context->project_build_path, TABI_GENERATED_FILE_NAME);
+      &context->mem, context->project_build_path, TABI_GENERATED_FILE_NAME);
   // Open the file to create it if it doesn't exist
   FILE *generated_file = fopen (generated_file_path, "w");
   fclose (generated_file);
-  free ((void *)generated_file_path);
 }
 
 /// Generate all rules and build targets
@@ -439,7 +374,7 @@ tabi_internal_generate (TabiContext *context)
                     fprintf (f, "build %s/%s/%s.o: %s_compile %s/%s\n",
                              context->tabi_build_path, target->target_name,
                              *source_file, target->compiler->name,
-                             context->projet_root_path, *source_file);
+                             context->project_root_path, *source_file);
                   }
 
                   // TODO: Place executables in the build path root (or maybe
@@ -479,7 +414,7 @@ tabi_internal_generate (TabiContext *context)
                     fprintf (f, "build %s/%s/%s.o: %s_compile %s/%s\n",
                              context->tabi_build_path, target->target_name,
                              *source_file, target->compiler->name,
-                             context->projet_root_path, *source_file);
+                             context->project_root_path, *source_file);
                   }
                   fprintf (f, "\n");
 
@@ -492,6 +427,26 @@ tabi_internal_generate (TabiContext *context)
     }
 
   fclose (f);
+}
+
+void
+tabi_internal_summary (TabiContext *context)
+{
+  (void)context;
+  tabi_internal_message ("Build instructions generated successfully");
+
+  f32 mem_percent
+      = (f32)context->mem.count / (f32)context->mem.capacity * 100.0f;
+  f32 avg_alloc_size
+      = context->mem.metadata.n_allocations > 0
+            ? (f32)context->mem.count / context->mem.metadata.n_allocations
+            : 0.0f;
+
+  tabi_internal_message ("Memory stats: %llu / %llu bytes used (%.2f%%), %llu "
+                         "allocations, average %.2f bytes per allocation",
+                         context->mem.count, context->mem.capacity,
+                         mem_percent, context->mem.metadata.n_allocations,
+                         avg_alloc_size);
 }
 
 #endif

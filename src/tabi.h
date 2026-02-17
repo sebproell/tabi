@@ -71,12 +71,13 @@ void tabi_depends_on (TabiBuildTarget *target, TabiBuildTarget *dependency);
 TabiCompiler *
 tabi_compiler (const char *path, const char *flags)
 {
-  TabiCompiler *compiler = (TabiCompiler *)malloc (sizeof (TabiCompiler));
+  TabiCompiler *compiler = tabi_internal_mem_calloc (&tabi_global_context.mem,
+                                                    sizeof (TabiCompiler));
   compiler->base.type = TABI_OBJECT_TYPE_COMPILER;
   // TODO derive name from path
-  compiler->name = strdup (path);
-  compiler->path = strdup (path);
-  compiler->flags = strdup (flags);
+  compiler->name = tabi_internal_strdup (&tabi_global_context.mem, path);
+  compiler->path = tabi_internal_strdup (&tabi_global_context.mem, path);
+  compiler->flags = tabi_internal_strdup (&tabi_global_context.mem, flags);
 
   TABI_DYN_ARRAY_APPEND (&tabi_global_context.objects, TabiObject *,
                          (TabiObject *)compiler);
@@ -87,13 +88,14 @@ tabi_compiler (const char *path, const char *flags)
 TabiBuildTarget *
 tabi_executable (TabiCompiler *compiler, const char *executable_name)
 {
-  TabiBuildTarget *target
-      = (TabiBuildTarget *)malloc (sizeof (TabiBuildTarget));
+  TabiBuildTarget *target = tabi_internal_mem_calloc (&tabi_global_context.mem,
+                                                     sizeof (TabiBuildTarget));
 
   target->base.type = TABI_OBJECT_TYPE_BUILD_TARGET;
   target->target_type = TABI_BUILD_TARGET_TYPE_EXECUTABLE;
   target->compiler = compiler;
-  target->target_name = strdup (executable_name);
+  target->target_name
+      = tabi_internal_strdup (&tabi_global_context.mem, executable_name);
 
   TABI_DYN_ARRAY_INIT (&target->source_files);
 
@@ -106,12 +108,13 @@ tabi_executable (TabiCompiler *compiler, const char *executable_name)
 TabiBuildTarget *
 tabi_objects (TabiCompiler *compiler, const char *target_name)
 {
-  TabiBuildTarget *target
-      = (TabiBuildTarget *)malloc (sizeof (TabiBuildTarget));
+  TabiBuildTarget *target = tabi_internal_mem_calloc (&tabi_global_context.mem,
+                                                     sizeof (TabiBuildTarget));
   target->base.type = TABI_OBJECT_TYPE_BUILD_TARGET;
   target->target_type = TABI_BUILD_TARGET_TYPE_OBJECTS;
   target->compiler = compiler;
-  target->target_name = strdup (target_name);
+  target->target_name
+      = tabi_internal_strdup (&tabi_global_context.mem, target_name);
 
   TABI_DYN_ARRAY_INIT (&target->source_files);
 
@@ -123,8 +126,9 @@ tabi_objects (TabiCompiler *compiler, const char *target_name)
 void
 tabi_add_source (TabiBuildTarget *target, const char *source_file)
 {
-  TABI_DYN_ARRAY_APPEND (&target->source_files, const char *,
-                         strdup (source_file));
+  TABI_DYN_ARRAY_APPEND (
+      &target->source_files, const char *,
+      tabi_internal_strdup (&tabi_global_context.mem, source_file));
 }
 
 void
