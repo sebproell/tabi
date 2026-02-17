@@ -8,8 +8,9 @@
 #ifndef TABI_INTERNAL_H
 #define TABI_INTERNAL_H
 
+#include "tabi-types.h"
+
 #include <stdarg.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,16 +25,16 @@
 ///
 /// typedef struct {
 ///   T *items;
-///   size_t count;
-///   size_t capacity;
+///   u64 count;
+///   u64 capacity;
 /// } TList;
 ///
 #define TABI_DECLARE_DYN_ARRAY(array_type, array_name)                        \
   typedef struct                                                              \
   {                                                                           \
     array_type *items;                                                        \
-    size_t count;                                                             \
-    size_t capacity;                                                          \
+    u64 count;                                                             \
+    u64 capacity;                                                          \
   } array_name;
 
 #define TABI_DYN_ARRAY_INITIAL_CAPACITY 2
@@ -63,7 +64,7 @@
     {                                                                         \
       if ((array)->count >= (array)->capacity)                                \
         {                                                                     \
-          size_t new_capacity                                                 \
+          u64 new_capacity                                                 \
               = ((array)->capacity == 0)                                      \
                     ? TABI_DYN_ARRAY_INITIAL_CAPACITY                         \
                     : (array)->capacity * TABI_DYN_ARRAY_GROWTH_FACTOR;       \
@@ -156,7 +157,7 @@ typedef struct
   /// Path where tabi may place build artifacts and temporary files
   const char *tabi_build_path;
 
-  bool need_bootstrap;
+  b8 need_bootstrap;
 
   /// Anything that tabi can build will be stored here
   TabiObjectArray objects;
@@ -177,7 +178,7 @@ void tabi_internal_object_deinit (TabiObject *object);
 
 void tabi_internal_status (TabiContext *context);
 
-void tabi_internal_init (int argc, char **argv, TabiContext *context);
+void tabi_internal_init (i32 argc, char **argv, TabiContext *context);
 
 void tabi_internal_deinit (TabiContext *context);
 
@@ -237,8 +238,8 @@ TabiContext tabi_global_context;
 const char *
 tabi_internal_pathcat (const char *path1, const char *path2)
 {
-  size_t len1 = strlen (path1);
-  size_t len2 = strlen (path2);
+  u64 len1 = strlen (path1);
+  u64 len2 = strlen (path2);
   char *result = (char *)calloc (len1 + len2 + 2, 1); // +1 for '/' +1 for '\0'
   strcpy (result, path1);
   result[len1] = '/';
@@ -294,7 +295,7 @@ tabi_internal_status (TabiContext *context)
 }
 
 void
-tabi_internal_init (int argc, char **argv, TabiContext *context)
+tabi_internal_init (i32 argc, char **argv, TabiContext *context)
 {
   if (argc < 3)
     {
@@ -397,7 +398,7 @@ tabi_internal_generate (TabiContext *context)
   FILE *f = fopen (TABI_GENERATED_FILE_NAME, "w");
   fprintf (f, "# Generated build instructions\n");
 
-  for (size_t i = 0; i < context->objects.count; ++i)
+  for (u64 i = 0; i < context->objects.count; ++i)
     {
       TabiObject *obj = context->objects.items[i];
       switch (obj->type)
